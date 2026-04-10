@@ -1,0 +1,9 @@
+longitud_pista=5000
+clima=SECO
+
+auto=Verstappen,90,95,D,80
+auto=Hamilton,88,92,D,75
+auto=Alonso,85,90,T,85
+auto=Leclerc,89,91,D,78
+auto=Norris,87,90,D,82
+auto=Sainz,86,89,T,80
