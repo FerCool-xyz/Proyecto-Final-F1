@@ -37,13 +37,10 @@
 #define TIPO_DEPORTIVO   'D'
 #define TIPO_TODOTERRENO 'T'
 
-   /* ════════════════════════════════════════════
-      TIPOS Y ESTRUCTURAS
-      ════════════════════════════════════════════ */
 typedef enum { CLIMA_SECO, CLIMA_LLUVIA, CLIMA_NIEVE } Clima;
 typedef enum { ESTADO_MENU, ESTADO_CORRIENDO, ESTADO_FIN } EstadoJuego;
 
-/* Unión de especificaciones (requisito del proyecto) */
+//Unión de especificaciones (requisito del proyecto) 
 typedef union {
     float turbo;    /* tipo D: boost de turbo  0-100 */
     float traccion; /* tipo T: agarre           0-100 */
@@ -63,7 +60,11 @@ typedef struct {
     int   accidentado;
     int   turnosAccidente;
     int   esJugador;
-
+    int nitro;
+    int nitroUsado;
+    int adelantamientos;
+    int accidentesTotales;
+    float velocidadMaxima;
     /* Gráficos */
     ALLEGRO_COLOR color;
 } Auto;
@@ -170,41 +171,98 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo) {
     for (int i = 0; i < cfg->numAutos; i++) {
         Auto* a = &cfg->autos[i];
 
+        float posicionAnterior = a->posicion;
+
         if (a->accidentado) {
             if (--a->turnosAccidente <= 0) a->accidentado = 0;
+            a->velocidadActual = 0;
             continue;
         }
 
         float vel = a->velocidadBase;
+
         if (a->tipoVehiculo == TIPO_DEPORTIVO)
             vel += a->especificaciones.turbo * 0.05f;
         else
             vel += a->especificaciones.traccion * 0.03f;
 
+        float rnd = ((float)rand() / RAND_MAX) * 0.35f - 0.10f;
+        vel *= (1.0f + rnd);
+
         if (a->esJugador) {
-            if (teclaArriba) vel *= 1.20f;
-            if (teclaAbajo)  vel *= 0.75f;
-        }
-        else {
-            float rnd = ((float)rand() / RAND_MAX) * 0.30f - 0.15f;
-            vel *= (1.0f + rnd);
+            if (teclaArriba && a->nitro > 0) {
+                vel *= 1.45f;
+                a->nitro--;
+                a->nitroUsado++;
+            }
+
+            if (teclaAbajo) {
+                vel *= 0.70f;
+            }
         }
 
         vel *= factorClima(cfg->clima, a->tipoVehiculo);
+
+        for (int j = 0; j < cfg->numAutos; j++) {
+            if (i == j) continue;
+
+            Auto* otro = &cfg->autos[j];
+
+            float diferencia = otro->posicion - a->posicion;
+
+            if (diferencia > 0 && diferencia < 80) {
+                vel *= 1.08f;
+            }
+        }
+
+        if (rand() % 100 < 8) {
+            int evento = rand() % 3;
+
+            if (evento == 0) {
+                vel *= 1.25f;
+                printf("[BOOST] %s encontro una recta perfecta!\n", a->nombre);
+            }
+            else if (evento == 1) {
+                vel *= 0.80f;
+                printf("[CURVA] %s perdio velocidad en una curva cerrada.\n", a->nombre);
+            }
+            else {
+                vel *= 1.12f;
+                printf("[REBASE] %s intento un rebase agresivo.\n", a->nombre);
+            }
+        }
+
         if (vel < 5.0f) vel = 5.0f;
 
         a->velocidadActual = vel;
         a->posicion += vel;
 
-        /* Probabilidad de accidente */
-        float prob = (100.0f - a->destreza) / 1000.0f;
-        if (cfg->clima == CLIMA_LLUVIA) prob *= 1.5f;
-        if (cfg->clima == CLIMA_NIEVE)  prob *= 2.5f;
+        if (a->velocidadActual > a->velocidadMaxima) {
+            a->velocidadMaxima = a->velocidadActual;
+        }
+
+        float prob = (100.0f - a->destreza) / 1200.0f;
+
+        if (teclaArriba && a->esJugador) prob *= 1.6f;
+        if (cfg->clima == CLIMA_LLUVIA) prob *= 1.6f;
+        if (cfg->clima == CLIMA_NIEVE)  prob *= 2.7f;
+
         if ((float)rand() / RAND_MAX < prob) {
             a->accidentado = 1;
             a->turnosAccidente = 2 + rand() % 3;
+            a->accidentesTotales++;
+
             printf("[!] %s tuvo un accidente! (%d turnos)\n",
                 a->nombre, a->turnosAccidente);
+        }
+
+        for (int j = 0; j < cfg->numAutos; j++) {
+            if (i == j) continue;
+
+            if (posicionAnterior < cfg->autos[j].posicion &&
+                a->posicion > cfg->autos[j].posicion) {
+                a->adelantamientos++;
+            }
         }
     }
 }
@@ -279,9 +337,7 @@ static void dibujarAuto(float cx, float cy, ALLEGRO_COLOR color,
             ALLEGRO_ALIGN_CENTRE, "X");
 }
 
-/* ════════════════════════════════════════════
-   dibujarPista
-   ════════════════════════════════════════════ */
+  
 void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno) {
     int n = cfg->numAutos;
 
@@ -359,6 +415,17 @@ void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno) {
         snprintf(buf, sizeof(buf), "Clima: %s", climaNombre(cfg->clima));
         al_draw_text(fuente, al_map_rgb(255, 200, 0), 10, 28, 0, buf);
 
+        for (int i = 0; i < cfg->numAutos; i++) 
+        {
+            if (cfg->autos[i].esJugador) 
+            {
+                char nitroTxt[64];
+                snprintf(nitroTxt, sizeof(nitroTxt), "Nitro: %d", cfg->autos[i].nitro);
+                al_draw_text(fuente, al_map_rgb(0, 220, 255), 10, 64, 0, nitroTxt);
+                break;
+            }
+        }
+
         snprintf(buf, sizeof(buf), "Camara: %.0f / %d", camara, cfg->longitudPista);
         al_draw_text(fuente, al_map_rgb(200, 200, 200), 10, 46, 0, buf);
 
@@ -368,12 +435,10 @@ void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno) {
 
         al_draw_text(fuente, al_map_rgb(200, 200, 200),
             ANCHO_VENTANA - 10, 28, ALLEGRO_ALIGN_RIGHT,
-            "Arriba: acelerar  Abajo: frenar  ESC: salir");
+            "Arriba: NITRO  Abajo : frenar  ESC : salir");
     }
 }
-/* ════════════════════════════════════════════
-   dibujarTabla  — tabla de posiciones
-   ════════════════════════════════════════════ */
+
 void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente) {
     if (!fuente) return;
     int n = cfg->numAutos;
@@ -391,7 +456,7 @@ void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente) {
     al_draw_line(xs, ty, xs + 600, ty, al_map_rgb(120, 120, 60), 1.0f);
     ty += 4;
 
-    /* Copia ordenada por posición */
+    //Copia ordenada por posición 
     Auto orden[MAX_AUTOS];
     int cnt = n < MAX_AUTOS ? n : MAX_AUTOS;
     for (int i = 0; i < cnt; i++) orden[i] = cfg->autos[i];
@@ -420,7 +485,7 @@ void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente) {
         ty += 20;
     }
 
-    /* Barra de progreso del jugador */
+    // Barra de progreso del jugador
     for (int i = 0; i < n; i++) {
         if (!cfg->autos[i].esJugador) continue;
         Auto* jug = &cfg->autos[i];
@@ -440,9 +505,6 @@ void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente) {
     }
 }
 
-/* ════════════════════════════════════════════
-   PANTALLAS: Menú y Fin
-   ════════════════════════════════════════════ */
 static void dibujarMenu(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracion* cfg) {
     for (int y = 0; y < ALTO_VENTANA; y++) {
         float t = (float)y / ALTO_VENTANA;
@@ -524,9 +586,8 @@ static void dibujarFin(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal,
         "ENTER = volver al menu  |  ESC = salir");
 }
 
-/* ════════════════════════════════════════════
-   MAIN
-   ════════════════════════════════════════════ */
+// MAIN
+
 int main(void) {
     srand((unsigned int)time(NULL));
 
@@ -585,6 +646,11 @@ int main(void) {
                         cfg.autos[i].velocidadActual = 0;
                         cfg.autos[i].accidentado = 0;
                         cfg.autos[i].turnosAccidente = 0;
+                        cfg.autos[i].nitro = cfg.autos[i].esJugador ? 35 : 0;
+                        cfg.autos[i].nitroUsado = 0;
+                        cfg.autos[i].adelantamientos = 0;
+                        cfg.autos[i].accidentesTotales = 0;
+                        cfg.autos[i].velocidadMaxima = 0;
                     }
                     turno = 0; ganadorIdx = -1;
                     estado = ESTADO_CORRIENDO;
