@@ -167,13 +167,15 @@ static float factorClima(Clima clima, char tipo) {
     return 1.0f;
 }
 
-void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo) {
-    for (int i = 0; i < cfg->numAutos; i++) {
+void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo) 
+{
+    for (int i = 0; i < cfg->numAutos; i++) 
+    {
         Auto* a = &cfg->autos[i];
-
         float posicionAnterior = a->posicion;
 
-        if (a->accidentado) {
+        if (a->accidentado) 
+        {
             if (--a->turnosAccidente <= 0) a->accidentado = 0;
             a->velocidadActual = 0;
             continue;
@@ -186,66 +188,124 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo) {
         else
             vel += a->especificaciones.traccion * 0.03f;
 
-        float rnd = ((float)rand() / RAND_MAX) * 0.35f - 0.10f;
-        vel *= (1.0f + rnd);
+        int usandoNitro = 0;
 
-        if (a->esJugador) {
-            if (teclaArriba && a->nitro > 0) {
-                vel *= 1.45f;
+        if (a->esJugador) 
+        {
+            if (teclaArriba && a->nitro > 0) 
+            {
+                usandoNitro = 1;
                 a->nitro--;
                 a->nitroUsado++;
             }
 
-            if (teclaAbajo) {
+            if (teclaAbajo) 
+            {
                 vel *= 0.70f;
             }
         }
+        else 
+        {
+            float lider = 0.0f;
+            float masCercanoAdelante = 999999.0f;
+            int vaUltimo = 1;
+
+            for (int j = 0; j < cfg->numAutos; j++) 
+            {
+                if (cfg->autos[j].posicion > lider)
+                    lider = cfg->autos[j].posicion;
+
+                if (cfg->autos[j].posicion < a->posicion)
+                    vaUltimo = 0;
+
+                float dif = cfg->autos[j].posicion - a->posicion;
+                if (dif > 0 && dif < masCercanoAdelante)
+                    masCercanoAdelante = dif;
+            }
+
+            float diferenciaLider = lider - a->posicion;
+
+            if (diferenciaLider > 400) 
+            {
+                vel *= 1.18f;
+            }
+            else if (diferenciaLider > 200) 
+            {
+                vel *= 1.10f;
+            }
+
+            if (vaUltimo) 
+            {
+                vel *= 1.15f;
+            }
+
+            if (masCercanoAdelante < 90) 
+            {
+                vel *= 1.12f;
+                printf("[IA] %s aprovecho el rebufo para acercarse.\n", a->nombre);
+            }
+
+            if (masCercanoAdelante < 35) 
+            {
+                vel *= 1.18f;
+                printf("[IA] %s intento un rebase agresivo.\n", a->nombre);
+            }
+
+            if (cfg->clima == CLIMA_LLUVIA && a->destreza < 90) 
+                vel *= 0.92f;
+
+            if (cfg->clima == CLIMA_NIEVE && a->tipoVehiculo == TIPO_DEPORTIVO) 
+                vel *= 0.88f;
+
+            float estrategia = ((float)rand() / RAND_MAX) * 0.20f - 0.05f;
+            vel *= (1.0f + estrategia);
+        }//else
 
         vel *= factorClima(cfg->clima, a->tipoVehiculo);
 
-        for (int j = 0; j < cfg->numAutos; j++) {
-            if (i == j) continue;
-
-            Auto* otro = &cfg->autos[j];
-
-            float diferencia = otro->posicion - a->posicion;
-
-            if (diferencia > 0 && diferencia < 80) {
-                vel *= 1.08f;
-            }
+        if (a->esJugador && usandoNitro) 
+        {
+            vel *= 2.2f;
+            vel += 35.0f;
+            printf("[NITRO] %s activo nitro! Velocidad: %.1f\n", a->nombre, vel);
         }
 
-        if (rand() % 100 < 8) {
+        if (rand() % 100 < 8) 
+        {
             int evento = rand() % 3;
 
-            if (evento == 0) {
+            if (evento == 0) 
+            {
                 vel *= 1.25f;
                 printf("[BOOST] %s encontro una recta perfecta!\n", a->nombre);
             }
-            else if (evento == 1) {
+            else if (evento == 1) 
+            {
                 vel *= 0.80f;
                 printf("[CURVA] %s perdio velocidad en una curva cerrada.\n", a->nombre);
             }
-            else {
+            else 
+            {
                 vel *= 1.12f;
                 printf("[REBASE] %s intento un rebase agresivo.\n", a->nombre);
             }
         }
 
-        if (vel < 5.0f) vel = 5.0f;
+        if (vel < 5.0f) 
+            vel = 5.0f;
 
         a->velocidadActual = vel;
         a->posicion += vel;
 
-        if (a->velocidadActual > a->velocidadMaxima) {
+        if (a->velocidadActual > a->velocidadMaxima) 
             a->velocidadMaxima = a->velocidadActual;
-        }
 
         float prob = (100.0f - a->destreza) / 1200.0f;
 
-        if (teclaArriba && a->esJugador) prob *= 1.6f;
+        if (a->esJugador && usandoNitro) prob *= 1.8f;
+        if (!a->esJugador && vel > a->velocidadBase * 1.25f) prob *= 1.4f;
         if (cfg->clima == CLIMA_LLUVIA) prob *= 1.6f;
-        if (cfg->clima == CLIMA_NIEVE)  prob *= 2.7f;
+        if (cfg->clima == CLIMA_NIEVE) prob *= 2.7f;
 
         if ((float)rand() / RAND_MAX < prob) {
             a->accidentado = 1;
@@ -256,16 +316,18 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo) {
                 a->nombre, a->turnosAccidente);
         }
 
-        for (int j = 0; j < cfg->numAutos; j++) {
+        for (int j = 0; j < cfg->numAutos; j++) 
+        {
             if (i == j) continue;
 
-            if (posicionAnterior < cfg->autos[j].posicion &&
-                a->posicion > cfg->autos[j].posicion) {
+            if (posicionAnterior < cfg->autos[j].posicion && a->posicion > cfg->autos[j].posicion) 
+            {
                 a->adelantamientos++;
             }
         }
     }
 }
+
 
 /* ════════════════════════════════════════════
    determinarGanador
