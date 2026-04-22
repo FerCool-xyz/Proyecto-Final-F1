@@ -1,11 +1,6 @@
-/*
- * ============================================================
- *  SIMULADOR DE CARRERA F1  —  Archivo único
- *  Compilar con:
- *  gcc carrera_f1.c -o carrera_f1 -lallegro -lallegro_font
- *      -lallegro_ttf -lallegro_primitives -lallegro_color -mwindows
- * ============================================================
- */
+//SIMULADOR DE CARRERA F1 
+//Programacion 1 - ISC 2C - Fernando Vicente Munoz - Alejandro Martinez Esparza
+
 #define _CRT_SECURE_NO_WARNINGS
 
  /* ─── Includes de Allegro 5 ─── */
@@ -38,7 +33,7 @@
 #define TIPO_TODOTERRENO 'T'
 
 typedef enum { CLIMA_SECO, CLIMA_LLUVIA, CLIMA_NIEVE } Clima;
-typedef enum { ESTADO_MENU, ESTADO_CORRIENDO, ESTADO_FIN } EstadoJuego;
+typedef enum { ESTADO_MENU, ESTADO_CORRIENDO, ESTADO_FIN, ESTADO_MARCAS } EstadoJuego;
 
 //Unión de especificaciones (requisito del proyecto) 
 typedef union {
@@ -77,6 +72,13 @@ typedef struct {
     Auto* autos;   /* arreglo dinámico (requisito del proyecto) */
 } Configuracion;
 
+typedef struct {
+    char nombre[MAX_NOMBRE];
+    int turnos;
+    float velocidadMaxima;
+    int accidentes;
+    int adelantamientos;
+} Marca;
 
   //PALETA DE COLORES
 
@@ -102,8 +104,103 @@ static const char* climaNombre(Clima c) {
     }
 }
 
+void guardarMarca(Auto ganador, int turnos) {
+    FILE* f = fopen("marcas.dat", "ab");
+    if (!f) {
+        printf("No se pudo abrir marcas.dat\n");
+        return;
+    }
+
+    Marca m;
+    strcpy(m.nombre, ganador.nombre);
+    m.turnos = turnos;
+    m.velocidadMaxima = ganador.velocidadMaxima;
+    m.accidentes = ganador.accidentesTotales;
+    m.adelantamientos = ganador.adelantamientos;
+
+    fwrite(&m, sizeof(Marca), 1, f);
+    fclose(f);
+}
+
+void mostrarMejoresMarcas(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal) {
+    al_clear_to_color(al_map_rgb(10, 10, 25));
+
+    al_draw_text(grande, al_map_rgb(255, 200, 0),
+        ANCHO_VENTANA / 2, 50, ALLEGRO_ALIGN_CENTRE,
+        "MEJORES MARCAS");
+
+    FILE* f = fopen("marcas.dat", "rb");
+
+    if (!f) {
+        al_draw_text(normal, al_map_rgb(220, 220, 220),
+            ANCHO_VENTANA / 2, 160, ALLEGRO_ALIGN_CENTRE,
+            "Todavia no hay marcas registradas.");
+
+        al_draw_text(normal, al_map_rgb(180, 180, 180),
+            ANCHO_VENTANA / 2, ALTO_VENTANA - 60, ALLEGRO_ALIGN_CENTRE,
+            "Presiona ENTER para volver al menu");
+
+        return;
+    }
+
+    Marca marcas[100];
+    int total = 0;
+
+    while (total < 100 && fread(&marcas[total], sizeof(Marca), 1, f) == 1) {
+        total++;
+    }
+
+    fclose(f);
+
+    for (int i = 0; i < total - 1; i++) {
+        for (int j = 0; j < total - 1 - i; j++) {
+            if (marcas[j].turnos > marcas[j + 1].turnos) {
+                Marca temp = marcas[j];
+                marcas[j] = marcas[j + 1];
+                marcas[j + 1] = temp;
+            }
+        }
+    }
+
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 170, 120, 0, "#");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 230, 120, 0, "Piloto");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 440, 120, 0, "Turnos");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 570, 120, 0, "Vel. Max");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 730, 120, 0, "Accidentes");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 900, 120, 0, "Rebases");
+
+    int limite = total < 10 ? total : 10;
+
+    for (int i = 0; i < limite; i++) {
+        char buf[128];
+        int y = 160 + i * 35;
+
+        snprintf(buf, sizeof(buf), "%d", i + 1);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 170, y, 0, buf);
+
+        al_draw_text(normal, al_map_rgb(0, 220, 255), 230, y, 0, marcas[i].nombre);
+
+        snprintf(buf, sizeof(buf), "%d", marcas[i].turnos);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 440, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%.1f", marcas[i].velocidadMaxima);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 570, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%d", marcas[i].accidentes);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 730, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%d", marcas[i].adelantamientos);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 900, y, 0, buf);
+    }
+
+    al_draw_text(normal, al_map_rgb(180, 180, 180),
+        ANCHO_VENTANA / 2, ALTO_VENTANA - 60, ALLEGRO_ALIGN_CENTRE,
+        "Presiona ENTER para volver al menu");
+}
+
 //La config se encuentra en un archivo de texto(3er parcial)
-int leerConfiguracion(const char* archivo, Configuracion* cfg) {
+int leerConfiguracion(const char* archivo, Configuracion* cfg) 
+{
     FILE* f = fopen(archivo, "r");
     if (!f) {
         fprintf(stderr, "Error: no se pudo abrir '%s'\n", archivo);
@@ -154,7 +251,9 @@ int leerConfiguracion(const char* archivo, Configuracion* cfg) {
     }
     fclose(f);
     cfg->numAutos = idx;
-    if (cfg->numAutos > 0) cfg->autos[0].esJugador = 1;
+    if (cfg->numAutos > 0) {
+        cfg->autos[0].esJugador = 1;
+    }
     return 1;
 }
 
@@ -339,7 +438,10 @@ int determinarGanador(Configuracion* cfg) {
 }
 
 void liberarConfiguracion(Configuracion* cfg) {
-    if (cfg->autos) { free(cfg->autos); cfg->autos = NULL; }
+    if (cfg->autos) {
+        free(cfg->autos);
+        cfg->autos = NULL;
+    }
     cfg->numAutos = 0;
 }
 
@@ -355,7 +457,7 @@ void imprimirConsolaEstado(Configuracion* cfg, int turno) {
 
     printf("\033[H\033[2J");
     printf("=================================================\n");
-    printf("  SIMULADOR F1  —  Turno %-5d\n", turno);
+    printf("  SIMULADOR F1  |  Turno %-5d\n", turno);
     printf("  Clima: %-8s  Pista: %d unidades\n",
         climaNombre(cfg->clima), cfg->longitudPista);
     printf("=================================================\n");
@@ -603,7 +705,7 @@ static void dibujarMenu(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracio
     int cy = 280 + cfg->numAutos * 22 + 30;
     al_draw_text(normal, al_map_rgb(180, 180, 180), ANCHO_VENTANA / 2, cy,
         ALLEGRO_ALIGN_CENTRE,
-        "Controles: Arriba=Acelerar  Abajo=Frenar  ESC=Salir");
+        "ENTER = iniciar | M = mejores marcas | ESC = salir");
 }
 
 static void dibujarFin(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal,
@@ -717,12 +819,18 @@ int main(void) {
                     turno = 0; ganadorIdx = -1;
                     estado = ESTADO_CORRIENDO;
                 }
-                else if (estado == ESTADO_FIN) {
+                else if (estado == ESTADO_FIN || estado == ESTADO_MARCAS) {
                     estado = ESTADO_MENU;
                 }
                 break;
             case ALLEGRO_KEY_UP:   teclaArriba = 1; break;
             case ALLEGRO_KEY_DOWN: teclaAbajo = 1;  break;
+            case ALLEGRO_KEY_M:
+                if (estado == ESTADO_MENU) 
+                {
+                    estado = ESTADO_MARCAS;
+                }
+                break;
             }
         }
         if (ev.type == ALLEGRO_EVENT_KEY_UP) 
@@ -742,9 +850,13 @@ int main(void) {
                     actualizarPosiciones(&cfg, teclaArriba, teclaAbajo);
                     imprimirConsolaEstado(&cfg, turno);
                     ganadorIdx = determinarGanador(&cfg);
-                    if (ganadorIdx >= 0) {
+                    if (ganadorIdx >= 0) 
+                    {
                         printf("\nGanador: %s en %d turnos!\n",
                             cfg.autos[ganadorIdx].nombre, turno);
+
+                        guardarMarca(cfg.autos[ganadorIdx], turno);
+
                         estado = ESTADO_FIN;
                     }
                 }
@@ -765,6 +877,9 @@ int main(void) {
                 break;
             case ESTADO_FIN:
                 dibujarFin(fGrande, fNormal, &cfg, ganadorIdx, turno);
+                break;
+            case ESTADO_MARCAS:
+                mostrarMejoresMarcas(fGrande, fNormal);
                 break;
             }
             al_flip_display();
