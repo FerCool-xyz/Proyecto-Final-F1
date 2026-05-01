@@ -1,0 +1,19 @@
+# Archivos generados por el simulador
+marcas.dat
+reporte.txt
+allegro.log
+
+# Carpetas de compilación
+x64/
+Debug/
+Release/
+
+# Archivos de Visual Studio
+.vs/
+
+# Ejecutables y objetos
+*.exe
+*.obj
+*.ilk
+*.pdb
+*.idb

@@ -1,4 +1,4 @@
-longitud_pista=5000
+longitud_pista=50000
 clima=SECO
 
 auto=Verstappen,90,95,D,80
