@@ -17,3 +17,4 @@ Release/
 *.ilk
 *.pdb
 *.idb
+*.user

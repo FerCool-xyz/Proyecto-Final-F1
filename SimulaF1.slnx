@@ -3,5 +3,8 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+  </Folder>
   <Project Path="SimulaF1/SimulaF1.vcxproj" Id="9bec86e6-6721-4cef-87a5-33dabfa7aa0e" />
 </Solution>

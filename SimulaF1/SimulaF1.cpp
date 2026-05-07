@@ -28,6 +28,8 @@
 #define TIPO_DEPORTIVO   'D'
 #define TIPO_TODOTERRENO 'T'
 
+#define NITRO_MAX          35
+
 typedef enum
 {
     CLIMA_SECO,
@@ -370,6 +372,43 @@ static float factorClima(Clima clima, char tipo)
     return 1.0f;
 }
 
+
+void recargarNitroJugador(Configuracion* cfg, int turno)
+{
+    for (int i = 0; i < cfg->numAutos; i++)
+    {
+        if (cfg->autos[i].esJugador)
+        {
+            int intervalo;
+
+            if (cfg->autos[i].nitro < 10)
+            {
+                intervalo = 6;
+            }
+            else if (cfg->autos[i].nitro < 25)
+            {
+                intervalo = 4;
+            }
+            else
+            {
+                intervalo = 2;
+            }
+
+            if (turno % intervalo == 0 && cfg->autos[i].nitro < NITRO_MAX)
+            {
+                cfg->autos[i].nitro += 1;
+
+                if (cfg->autos[i].nitro > NITRO_MAX)
+                {
+                    cfg->autos[i].nitro = NITRO_MAX;
+                }
+            }
+
+            break;
+        }
+    }
+}
+
 void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
 {
     for (int i = 0; i < cfg->numAutos; i++)
@@ -413,6 +452,27 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
             if (teclaAbajo)
             {
                 vel *= 0.70f;
+            }
+
+            float lider = 0.0f;
+
+            for (int j = 0; j < cfg->numAutos; j++)
+            {
+                if (cfg->autos[j].posicion > lider)
+                {
+                    lider = cfg->autos[j].posicion;
+                }
+            }
+
+            float diferenciaLider = lider - a->posicion;
+
+            if (diferenciaLider > 800)
+            {
+                vel *= 1.18f;
+            }
+            else if (diferenciaLider > 400)
+            {
+                vel *= 1.10f;
             }
         }
         else
@@ -489,8 +549,8 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
 
         if (a->esJugador && usandoNitro)
         {
-            vel *= 1.45f;
-            vel += 15.0f;
+            vel *= 1.60f;
+            vel += 20.0f;
         }
 
         if (rand() % 100 < 8)
@@ -767,7 +827,7 @@ void imprimirConsolaEstado(Configuracion* cfg, int turno, float tiempoCarrera)
             }
 
             int barrasProgreso = (int)(progreso / 5.0f);
-            int barrasNitro = (j->nitro * 20) / 35;
+            int barrasNitro = (j->nitro * 20) / NITRO_MAX;
 
             if (barrasNitro > 20)
             {
@@ -805,7 +865,7 @@ void imprimirConsolaEstado(Configuracion* cfg, int turno, float tiempoCarrera)
     }
 
     printf("==========================================================================\n");
-    printf(" Controles: Flecha arriba = NITRO | Flecha abajo = frenar | ESC = salir\n");
+    printf(" Controles: Flecha arriba = NITRO | Flecha abajo = frenar | ESC = salir | Nitro se recarga\n");
     printf("==========================================================================\n");
 
     fflush(stdout);
@@ -1189,7 +1249,7 @@ static void dibujarMenu(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracio
 
     al_draw_text(normal, al_map_rgb(0, 220, 255),
         ANCHO_VENTANA / 2, yControles + 72, ALLEGRO_ALIGN_CENTRE,
-        "Durante la carrera: Flecha arriba = nitro     Flecha abajo = frenar");
+        "Durante la carrera: Flecha arriba = nitro     Flecha abajo = frenar     Nitro se recarga");
 }
 
 static void dibujarFin(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal,
@@ -1497,7 +1557,7 @@ int main(void)
                         cfg.autos[i].velocidadActual = 0;
                         cfg.autos[i].accidentado = 0;
                         cfg.autos[i].turnosAccidente = 0;
-                        cfg.autos[i].nitro = cfg.autos[i].esJugador ? 35 : 0;
+                        cfg.autos[i].nitro = cfg.autos[i].esJugador ? NITRO_MAX : 0;
                         cfg.autos[i].nitroUsado = 0;
                         cfg.autos[i].adelantamientos = 0;
                         cfg.autos[i].accidentesTotales = 0;
@@ -1557,6 +1617,7 @@ int main(void)
                     turno++;
                     tiempoCarrera += framesPorTurno / (float)FPS;
 
+                    recargarNitroJugador(&cfg, turno);
                     actualizarPosiciones(&cfg, teclaArriba, teclaAbajo);
                     imprimirConsolaEstado(&cfg, turno, tiempoCarrera);
 
