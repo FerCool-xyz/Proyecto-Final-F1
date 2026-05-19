@@ -1,5 +1,7 @@
 // SIMULADOR DE CARRERA F1
-// Programacion 1 - ISC 2C - Fernando Vicente Munoz - Alejandro Martinez Esparza
+// Programacion I - Proyecto Final
+// Version con: neumaticos, pits, safety car, clima dinamico, combustible,
+// radio, temporada, estadisticas historicas, personalidades IA y DRS.
 
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -28,9 +30,10 @@
 #define TIPO_DEPORTIVO   'D'
 #define TIPO_TODOTERRENO 'T'
 
-#define NITRO_MAX          35
-#define NITRO_RECARGA      2
-#define NITRO_CADA_TURNOS  3
+#define NITRO_MAX        35
+#define PIT_TURNOS       3
+#define FUEL_MAX         100.0f
+#define NEUMATICOS_MAX   100.0f
 
 typedef enum
 {
@@ -44,8 +47,17 @@ typedef enum
     ESTADO_MENU,
     ESTADO_CORRIENDO,
     ESTADO_FIN,
-    ESTADO_MARCAS
+    ESTADO_MARCAS,
+    ESTADO_TEMPORADA,
+    ESTADO_ESTADISTICAS
 } EstadoJuego;
+
+typedef enum
+{
+    IA_AGRESIVO,
+    IA_CONSERVADOR,
+    IA_EQUILIBRADO
+} PersonalidadIA;
 
 /* Union de especificaciones */
 typedef union
@@ -75,6 +87,16 @@ typedef struct
     int accidentesTotales;
     float velocidadMaxima;
 
+    float neumaticos;
+    int enPits;
+    int turnosPit;
+
+    float combustible;
+    int eliminado;
+
+    int drsActivo;
+    PersonalidadIA personalidad;
+
     ALLEGRO_COLOR color;
 } Auto;
 
@@ -98,9 +120,60 @@ typedef struct
     int adelantamientos;
 } Marca;
 
-/* PALETA DE COLORES */
-static ALLEGRO_COLOR COLORES_AUTO[8];
+/* Puntos de temporada */
+typedef struct
+{
+    char nombre[MAX_NOMBRE];
+    int puntos;
+    int victorias;
+    int carreras;
+} TemporadaPiloto;
 
+/* Estadisticas historicas */
+typedef struct
+{
+    char nombre[MAX_NOMBRE];
+    int carreras;
+    int victorias;
+    int accidentes;
+    int adelantamientos;
+    float mejorTiempo;
+    float velocidadMaxima;
+} EstadisticaPiloto;
+
+/* GLOBALES DE CARRERA */
+static ALLEGRO_COLOR COLORES_AUTO[8];
+static int safetyCarTurnos = 0;
+static char ultimoEvento[160] = "Carrera lista para iniciar.";
+static char radioEquipo[160] = "Ingeniero: Mantente concentrado.";
+
+/* PROTOTIPOS */
+static void inicializarColores(void);
+static const char* climaNombre(Clima c);
+static const char* personalidadNombre(PersonalidadIA p);
+void formatearTiempo(float tiempo, char* buffer, int tam);
+int leerConfiguracion(const char* archivo, Configuracion* cfg);
+void liberarConfiguracion(Configuracion* cfg);
+void recargarNitroJugador(Configuracion* cfg, int turno);
+void actualizarClimaDinamico(Configuracion* cfg, int turno);
+void actualizarRadio(Configuracion* cfg, int turno);
+void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo, int teclaPit);
+int determinarGanador(Configuracion* cfg);
+void guardarMarca(Auto ganador, int turnos, float tiempo);
+void guardarPuntosTemporada(Configuracion* cfg);
+void guardarEstadisticasHistoricas(Configuracion* cfg, int ganadorIdx, float tiempoCarrera);
+void generarReporteFinal(Configuracion* cfg, int ganadorIdx, int turno, float tiempoCarrera);
+void imprimirConsolaEstado(Configuracion* cfg, int turno, float tiempoCarrera);
+void imprimirConsolaFinal(Configuracion* cfg, int ganadorIdx, int turno, float tiempoCarrera);
+void mostrarMejoresMarcas(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal);
+void mostrarTemporada(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal);
+void mostrarEstadisticas(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal);
+void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno, float tiempoCarrera);
+void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente);
+static void dibujarMenu(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracion* cfg);
+static void dibujarFin(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracion* cfg, int ganadorIdx, int turno, float tiempoCarrera);
+
+/* COLORES */
 static void inicializarColores(void)
 {
     COLORES_AUTO[0] = al_map_rgb(220, 50, 50);
@@ -128,6 +201,21 @@ static const char* climaNombre(Clima c)
     }
 }
 
+static const char* personalidadNombre(PersonalidadIA p)
+{
+    switch (p)
+    {
+    case IA_AGRESIVO:
+        return "Agresivo";
+
+    case IA_CONSERVADOR:
+        return "Conservador";
+
+    default:
+        return "Equilibrado";
+    }
+}
+
 void formatearTiempo(float tiempo, char* buffer, int tam)
 {
     int minutos = (int)(tiempo / 60.0f);
@@ -136,6 +224,7 @@ void formatearTiempo(float tiempo, char* buffer, int tam)
     snprintf(buffer, tam, "%02d:%06.3f", minutos, segundos);
 }
 
+/* MARCAS */
 void guardarMarca(Auto ganador, int turnos, float tiempo)
 {
     FILE* f = fopen("marcas.dat", "ab");
@@ -247,7 +336,345 @@ void mostrarMejoresMarcas(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal)
         "Presiona ENTER para volver al menu");
 }
 
-/* Lee config.txt */
+/* TEMPORADA */
+static int buscarTemporadaPiloto(TemporadaPiloto* arr, int total, const char* nombre)
+{
+    for (int i = 0; i < total; i++)
+    {
+        if (strcmp(arr[i].nombre, nombre) == 0)
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+void guardarPuntosTemporada(Configuracion* cfg)
+{
+    TemporadaPiloto tabla[100];
+    int total = 0;
+
+    FILE* f = fopen("temporada.dat", "rb");
+
+    if (f)
+    {
+        while (total < 100 && fread(&tabla[total], sizeof(TemporadaPiloto), 1, f) == 1)
+        {
+            total++;
+        }
+
+        fclose(f);
+    }
+
+    Auto orden[MAX_AUTOS];
+    int cnt = cfg->numAutos < MAX_AUTOS ? cfg->numAutos : MAX_AUTOS;
+
+    for (int i = 0; i < cnt; i++)
+    {
+        orden[i] = cfg->autos[i];
+    }
+
+    for (int i = 0; i < cnt - 1; i++)
+    {
+        for (int j = 0; j < cnt - 1 - i; j++)
+        {
+            if (orden[j].posicion < orden[j + 1].posicion)
+            {
+                Auto tmp = orden[j];
+                orden[j] = orden[j + 1];
+                orden[j + 1] = tmp;
+            }
+        }
+    }
+
+    int puntosF1[10] = { 25, 18, 15, 12, 10, 8, 6, 4, 2, 1 };
+
+    for (int i = 0; i < cnt && i < 10; i++)
+    {
+        int idx = buscarTemporadaPiloto(tabla, total, orden[i].nombre);
+
+        if (idx < 0 && total < 100)
+        {
+            idx = total;
+            strcpy(tabla[idx].nombre, orden[i].nombre);
+            tabla[idx].puntos = 0;
+            tabla[idx].victorias = 0;
+            tabla[idx].carreras = 0;
+            total++;
+        }
+
+        if (idx >= 0)
+        {
+            tabla[idx].puntos += puntosF1[i];
+            tabla[idx].carreras++;
+
+            if (i == 0)
+            {
+                tabla[idx].victorias++;
+            }
+        }
+    }
+
+    f = fopen("temporada.dat", "wb");
+
+    if (f)
+    {
+        fwrite(tabla, sizeof(TemporadaPiloto), total, f);
+        fclose(f);
+    }
+}
+
+void mostrarTemporada(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal)
+{
+    al_clear_to_color(al_map_rgb(10, 10, 25));
+
+    al_draw_text(grande, al_map_rgb(255, 200, 0),
+        ANCHO_VENTANA / 2, 50, ALLEGRO_ALIGN_CENTRE,
+        "TEMPORADA");
+
+    FILE* f = fopen("temporada.dat", "rb");
+
+    if (!f)
+    {
+        al_draw_text(normal, al_map_rgb(220, 220, 220),
+            ANCHO_VENTANA / 2, 160, ALLEGRO_ALIGN_CENTRE,
+            "Todavia no hay puntos de temporada.");
+
+        al_draw_text(normal, al_map_rgb(180, 180, 180),
+            ANCHO_VENTANA / 2, ALTO_VENTANA - 60, ALLEGRO_ALIGN_CENTRE,
+            "Presiona ENTER para volver al menu");
+
+        return;
+    }
+
+    TemporadaPiloto tabla[100];
+    int total = 0;
+
+    while (total < 100 && fread(&tabla[total], sizeof(TemporadaPiloto), 1, f) == 1)
+    {
+        total++;
+    }
+
+    fclose(f);
+
+    for (int i = 0; i < total - 1; i++)
+    {
+        for (int j = 0; j < total - 1 - i; j++)
+        {
+            if (tabla[j].puntos < tabla[j + 1].puntos)
+            {
+                TemporadaPiloto temp = tabla[j];
+                tabla[j] = tabla[j + 1];
+                tabla[j + 1] = temp;
+            }
+        }
+    }
+
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 230, 130, 0, "POS");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 330, 130, 0, "Piloto");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 620, 130, 0, "Puntos");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 780, 130, 0, "Victorias");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 980, 130, 0, "Carreras");
+
+    int limite = total < 10 ? total : 10;
+
+    for (int i = 0; i < limite; i++)
+    {
+        char buf[64];
+        int y = 170 + i * 35;
+
+        snprintf(buf, sizeof(buf), "%d", i + 1);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 230, y, 0, buf);
+
+        al_draw_text(normal, al_map_rgb(0, 220, 255), 330, y, 0, tabla[i].nombre);
+
+        snprintf(buf, sizeof(buf), "%d", tabla[i].puntos);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 620, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%d", tabla[i].victorias);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 780, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%d", tabla[i].carreras);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 980, y, 0, buf);
+    }
+
+    al_draw_text(normal, al_map_rgb(180, 180, 180),
+        ANCHO_VENTANA / 2, ALTO_VENTANA - 60, ALLEGRO_ALIGN_CENTRE,
+        "Presiona ENTER para volver al menu");
+}
+
+/* ESTADISTICAS HISTORICAS */
+static int buscarEstadisticaPiloto(EstadisticaPiloto* arr, int total, const char* nombre)
+{
+    for (int i = 0; i < total; i++)
+    {
+        if (strcmp(arr[i].nombre, nombre) == 0)
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+void guardarEstadisticasHistoricas(Configuracion* cfg, int ganadorIdx, float tiempoCarrera)
+{
+    EstadisticaPiloto tabla[100];
+    int total = 0;
+
+    FILE* f = fopen("estadisticas.dat", "rb");
+
+    if (f)
+    {
+        while (total < 100 && fread(&tabla[total], sizeof(EstadisticaPiloto), 1, f) == 1)
+        {
+            total++;
+        }
+
+        fclose(f);
+    }
+
+    for (int i = 0; i < cfg->numAutos; i++)
+    {
+        Auto* a = &cfg->autos[i];
+        int idx = buscarEstadisticaPiloto(tabla, total, a->nombre);
+
+        if (idx < 0 && total < 100)
+        {
+            idx = total;
+            strcpy(tabla[idx].nombre, a->nombre);
+            tabla[idx].carreras = 0;
+            tabla[idx].victorias = 0;
+            tabla[idx].accidentes = 0;
+            tabla[idx].adelantamientos = 0;
+            tabla[idx].mejorTiempo = 0;
+            tabla[idx].velocidadMaxima = 0;
+            total++;
+        }
+
+        if (idx >= 0)
+        {
+            tabla[idx].carreras++;
+            tabla[idx].accidentes += a->accidentesTotales;
+            tabla[idx].adelantamientos += a->adelantamientos;
+
+            if (a->velocidadMaxima > tabla[idx].velocidadMaxima)
+            {
+                tabla[idx].velocidadMaxima = a->velocidadMaxima;
+            }
+
+            if (i == ganadorIdx)
+            {
+                tabla[idx].victorias++;
+
+                if (tabla[idx].mejorTiempo <= 0 || tiempoCarrera < tabla[idx].mejorTiempo)
+                {
+                    tabla[idx].mejorTiempo = tiempoCarrera;
+                }
+            }
+        }
+    }
+
+    f = fopen("estadisticas.dat", "wb");
+
+    if (f)
+    {
+        fwrite(tabla, sizeof(EstadisticaPiloto), total, f);
+        fclose(f);
+    }
+}
+
+void mostrarEstadisticas(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal)
+{
+    al_clear_to_color(al_map_rgb(10, 10, 25));
+
+    al_draw_text(grande, al_map_rgb(255, 200, 0),
+        ANCHO_VENTANA / 2, 50, ALLEGRO_ALIGN_CENTRE,
+        "ESTADISTICAS HISTORICAS");
+
+    FILE* f = fopen("estadisticas.dat", "rb");
+
+    if (!f)
+    {
+        al_draw_text(normal, al_map_rgb(220, 220, 220),
+            ANCHO_VENTANA / 2, 160, ALLEGRO_ALIGN_CENTRE,
+            "Todavia no hay estadisticas historicas.");
+
+        al_draw_text(normal, al_map_rgb(180, 180, 180),
+            ANCHO_VENTANA / 2, ALTO_VENTANA - 60, ALLEGRO_ALIGN_CENTRE,
+            "Presiona ENTER para volver al menu");
+
+        return;
+    }
+
+    EstadisticaPiloto tabla[100];
+    int total = 0;
+
+    while (total < 100 && fread(&tabla[total], sizeof(EstadisticaPiloto), 1, f) == 1)
+    {
+        total++;
+    }
+
+    fclose(f);
+
+    for (int i = 0; i < total - 1; i++)
+    {
+        for (int j = 0; j < total - 1 - i; j++)
+        {
+            if (tabla[j].victorias < tabla[j + 1].victorias)
+            {
+                EstadisticaPiloto temp = tabla[j];
+                tabla[j] = tabla[j + 1];
+                tabla[j + 1] = temp;
+            }
+        }
+    }
+
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 90, 130, 0, "Piloto");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 310, 130, 0, "Carreras");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 470, 130, 0, "Victorias");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 640, 130, 0, "Acc.");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 770, 130, 0, "Rebases");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 940, 130, 0, "Mejor tiempo");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 1150, 130, 0, "VelMax");
+
+    int limite = total < 10 ? total : 10;
+
+    for (int i = 0; i < limite; i++)
+    {
+        char buf[64];
+        char tiempoTxt[32];
+        int y = 170 + i * 35;
+
+        formatearTiempo(tabla[i].mejorTiempo, tiempoTxt, sizeof(tiempoTxt));
+
+        al_draw_text(normal, al_map_rgb(0, 220, 255), 90, y, 0, tabla[i].nombre);
+
+        snprintf(buf, sizeof(buf), "%d", tabla[i].carreras);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 310, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%d", tabla[i].victorias);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 470, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%d", tabla[i].accidentes);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 640, y, 0, buf);
+
+        snprintf(buf, sizeof(buf), "%d", tabla[i].adelantamientos);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 770, y, 0, buf);
+
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 940, y, 0, tiempoTxt);
+
+        snprintf(buf, sizeof(buf), "%.1f", tabla[i].velocidadMaxima);
+        al_draw_text(normal, al_map_rgb(230, 230, 230), 1150, y, 0, buf);
+    }
+
+    al_draw_text(normal, al_map_rgb(180, 180, 180),
+        ANCHO_VENTANA / 2, ALTO_VENTANA - 60, ALLEGRO_ALIGN_CENTRE,
+        "Presiona ENTER para volver al menu");
+}
+
+/* CONFIGURACION */
 int leerConfiguracion(const char* archivo, Configuracion* cfg)
 {
     FILE* f = fopen(archivo, "r");
@@ -341,6 +768,7 @@ int leerConfiguracion(const char* archivo, Configuracion* cfg)
                 a->especificaciones.traccion = extra;
             }
 
+            a->personalidad = (PersonalidadIA)(idx % 3);
             a->color = COLORES_AUTO[idx % 8];
 
             idx++;
@@ -374,21 +802,31 @@ static float factorClima(Clima clima, char tipo)
     return 1.0f;
 }
 
-
+/* NITRO DINAMICO */
 void recargarNitroJugador(Configuracion* cfg, int turno)
 {
-    if (turno % NITRO_CADA_TURNOS != 0)
-    {
-        return;
-    }
-
     for (int i = 0; i < cfg->numAutos; i++)
     {
         if (cfg->autos[i].esJugador)
         {
-            if (cfg->autos[i].nitro < NITRO_MAX)
+            int intervalo;
+
+            if (cfg->autos[i].nitro < 10)
             {
-                cfg->autos[i].nitro += NITRO_RECARGA;
+                intervalo = 6;
+            }
+            else if (cfg->autos[i].nitro < 25)
+            {
+                intervalo = 4;
+            }
+            else
+            {
+                intervalo = 2;
+            }
+
+            if (turno % intervalo == 0 && cfg->autos[i].nitro < NITRO_MAX)
+            {
+                cfg->autos[i].nitro++;
 
                 if (cfg->autos[i].nitro > NITRO_MAX)
                 {
@@ -401,12 +839,113 @@ void recargarNitroJugador(Configuracion* cfg, int turno)
     }
 }
 
-void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
+/* CLIMA DINAMICO */
+void actualizarClimaDinamico(Configuracion* cfg, int turno)
+{
+    if (turno > 0 && turno % 70 == 0)
+    {
+        int cambio = rand() % 100;
+
+        if (cambio < 35)
+        {
+            Clima anterior = cfg->clima;
+            cfg->clima = (Clima)(rand() % 3);
+
+            if (cfg->clima != anterior)
+            {
+                snprintf(ultimoEvento, sizeof(ultimoEvento),
+                    "Cambio de clima: ahora hay %s.", climaNombre(cfg->clima));
+            }
+        }
+    }
+}
+
+/* RADIO */
+void actualizarRadio(Configuracion* cfg, int turno)
+{
+    if (turno % 25 != 0)
+    {
+        return;
+    }
+
+    Auto* jugador = NULL;
+
+    for (int i = 0; i < cfg->numAutos; i++)
+    {
+        if (cfg->autos[i].esJugador)
+        {
+            jugador = &cfg->autos[i];
+            break;
+        }
+    }
+
+    if (!jugador)
+    {
+        return;
+    }
+
+    if (jugador->neumaticos < 25)
+    {
+        strcpy(radioEquipo, "Ingeniero: Neumaticos muy gastados, considera entrar a pits.");
+    }
+    else if (jugador->combustible < 20)
+    {
+        strcpy(radioEquipo, "Ingeniero: Combustible bajo, cuida el ritmo.");
+    }
+    else if (jugador->drsActivo)
+    {
+        strcpy(radioEquipo, "Ingeniero: DRS disponible, aprovecha la recta.");
+    }
+    else if (safetyCarTurnos > 0)
+    {
+        strcpy(radioEquipo, "Ingeniero: Safety Car en pista, conserva posicion.");
+    }
+    else
+    {
+        const char* mensajes[] =
+        {
+            "Ingeniero: Buen ritmo, sigue asi.",
+            "Ingeniero: Administra el nitro.",
+            "Ingeniero: Mantente cerca para activar DRS.",
+            "Ingeniero: Cuida las llantas en las curvas.",
+            "Ingeniero: Tenemos buen ritmo de carrera."
+        };
+
+        strcpy(radioEquipo, mensajes[rand() % 5]);
+    }
+}
+
+/* ACTUALIZACION PRINCIPAL */
+void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo, int teclaPit)
 {
     for (int i = 0; i < cfg->numAutos; i++)
     {
         Auto* a = &cfg->autos[i];
         float posicionAnterior = a->posicion;
+
+        if (a->eliminado)
+        {
+            a->velocidadActual = 0;
+            continue;
+        }
+
+        if (a->enPits)
+        {
+            a->turnosPit--;
+            a->velocidadActual = 0;
+
+            if (a->turnosPit <= 0)
+            {
+                a->enPits = 0;
+                a->neumaticos = NEUMATICOS_MAX;
+                a->combustible = FUEL_MAX;
+
+                snprintf(ultimoEvento, sizeof(ultimoEvento),
+                    "%s salio de pits con neumaticos nuevos.", a->nombre);
+            }
+
+            continue;
+        }
 
         if (a->accidentado)
         {
@@ -416,6 +955,17 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
             }
 
             a->velocidadActual = 0;
+            continue;
+        }
+
+        if (a->combustible <= 0)
+        {
+            a->eliminado = 1;
+            a->velocidadActual = 0;
+
+            snprintf(ultimoEvento, sizeof(ultimoEvento),
+                "%s abandono por falta de combustible.", a->nombre);
+
             continue;
         }
 
@@ -432,8 +982,20 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
 
         int usandoNitro = 0;
 
+        /* JUGADOR */
         if (a->esJugador)
         {
+            if (teclaPit && a->neumaticos < 80 && !a->enPits)
+            {
+                a->enPits = 1;
+                a->turnosPit = PIT_TURNOS;
+
+                snprintf(ultimoEvento, sizeof(ultimoEvento),
+                    "%s entro a pits.", a->nombre);
+
+                continue;
+            }
+
             if (teclaArriba && a->nitro > 0)
             {
                 usandoNitro = 1;
@@ -467,8 +1029,20 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
                 vel *= 1.10f;
             }
         }
+        /* IA */
         else
         {
+            if (a->neumaticos < 25 && !a->enPits && rand() % 100 < 25)
+            {
+                a->enPits = 1;
+                a->turnosPit = PIT_TURNOS;
+
+                snprintf(ultimoEvento, sizeof(ultimoEvento),
+                    "%s entro a pits por desgaste.", a->nombre);
+
+                continue;
+            }
+
             float lider = 0.0f;
             float masCercanoAdelante = 999999.0f;
             int vaUltimo = 1;
@@ -510,56 +1084,113 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
 
             if (vaUltimo)
             {
-                vel *= 1.15f;
+                vel *= 1.12f;
             }
 
             if (masCercanoAdelante < 90)
             {
-                vel *= 1.12f;
+                vel *= 1.08f;
             }
 
             if (masCercanoAdelante < 35)
             {
-                vel *= 1.18f;
+                vel *= 1.12f;
             }
 
-            if (cfg->clima == CLIMA_LLUVIA && a->destreza < 90)
+            if (a->personalidad == IA_AGRESIVO)
             {
-                vel *= 0.92f;
+                vel *= 1.08f;
             }
-
-            if (cfg->clima == CLIMA_NIEVE && a->tipoVehiculo == TIPO_DEPORTIVO)
+            else if (a->personalidad == IA_CONSERVADOR)
             {
-                vel *= 0.88f;
+                vel *= 0.97f;
             }
 
-            float estrategia = ((float)rand() / RAND_MAX) * 0.20f - 0.05f;
+            float estrategia = ((float)rand() / RAND_MAX) * 0.18f - 0.04f;
             vel *= (1.0f + estrategia);
         }
 
+        /* DRS */
+        a->drsActivo = 0;
+
+        for (int j = 0; j < cfg->numAutos; j++)
+        {
+            if (i == j)
+            {
+                continue;
+            }
+
+            float dif = cfg->autos[j].posicion - a->posicion;
+
+            if (dif > 0 && dif < 100 && safetyCarTurnos == 0)
+            {
+                a->drsActivo = 1;
+                vel *= 1.10f;
+                break;
+            }
+        }
+
+        /* CLIMA */
         vel *= factorClima(cfg->clima, a->tipoVehiculo);
 
-        if (a->esJugador && usandoNitro)
+        /* NEUMATICOS */
+        if (a->neumaticos < 20)
+        {
+            vel *= 0.70f;
+        }
+        else if (a->neumaticos < 40)
+        {
+            vel *= 0.85f;
+        }
+        else if (a->neumaticos < 70)
+        {
+            vel *= 0.95f;
+        }
+
+        /* COMBUSTIBLE */
+        if (a->combustible < 15)
+        {
+            vel *= 0.85f;
+        }
+
+        /* SAFETY CAR */
+        if (safetyCarTurnos > 0)
+        {
+            vel *= 0.45f;
+        }
+
+        /* NITRO */
+        if (a->esJugador && usandoNitro && safetyCarTurnos == 0)
         {
             vel *= 1.60f;
             vel += 20.0f;
         }
 
-        if (rand() % 100 < 8)
+        /* EVENTOS */
+        if (safetyCarTurnos == 0 && rand() % 100 < 7)
         {
             int evento = rand() % 3;
 
             if (evento == 0)
             {
-                vel *= 1.25f;
+                vel *= 1.18f;
+
+                snprintf(ultimoEvento, sizeof(ultimoEvento),
+                    "%s encontro una recta perfecta.", a->nombre);
             }
             else if (evento == 1)
             {
-                vel *= 0.80f;
+                vel *= 0.85f;
+
+                snprintf(ultimoEvento, sizeof(ultimoEvento),
+                    "%s perdio velocidad en una curva.", a->nombre);
             }
             else
             {
-                vel *= 1.12f;
+                vel *= 1.08f;
+
+                snprintf(ultimoEvento, sizeof(ultimoEvento),
+                    "%s intento un rebase agresivo.", a->nombre);
             }
         }
 
@@ -576,16 +1207,69 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
             a->velocidadMaxima = a->velocidadActual;
         }
 
+        /* DESGASTE */
+        float desgaste = 0.35f;
+
+        if (a->drsActivo)
+        {
+            desgaste += 0.08f;
+        }
+
+        if (usandoNitro)
+        {
+            desgaste += 0.15f;
+        }
+
+        if (a->personalidad == IA_AGRESIVO)
+        {
+            desgaste += 0.08f;
+        }
+
+        if (cfg->clima == CLIMA_LLUVIA)
+        {
+            desgaste += 0.05f;
+        }
+
+        if (cfg->clima == CLIMA_NIEVE)
+        {
+            desgaste += 0.10f;
+        }
+
+        a->neumaticos -= desgaste;
+
+        if (a->neumaticos < 0)
+        {
+            a->neumaticos = 0;
+        }
+
+        a->combustible -= 0.25f;
+
+        if (usandoNitro)
+        {
+            a->combustible -= 0.10f;
+        }
+
+        if (a->combustible < 0)
+        {
+            a->combustible = 0;
+        }
+
+        /* ACCIDENTES */
         float prob = (100.0f - a->destreza) / 1200.0f;
 
         if (a->esJugador && usandoNitro)
         {
-            prob *= 1.8f;
+            prob *= 1.5f;
         }
 
-        if (!a->esJugador && vel > a->velocidadBase * 1.25f)
+        if (!a->esJugador && a->personalidad == IA_AGRESIVO)
         {
             prob *= 1.4f;
+        }
+
+        if (a->neumaticos < 20)
+        {
+            prob *= 1.8f;
         }
 
         if (cfg->clima == CLIMA_LLUVIA)
@@ -595,16 +1279,21 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
 
         if (cfg->clima == CLIMA_NIEVE)
         {
-            prob *= 2.7f;
+            prob *= 2.4f;
         }
 
-        if ((float)rand() / RAND_MAX < prob)
+        if (safetyCarTurnos == 0 && (float)rand() / RAND_MAX < prob)
         {
             a->accidentado = 1;
             a->turnosAccidente = 2 + rand() % 3;
             a->accidentesTotales++;
+            safetyCarTurnos = 3;
+
+            snprintf(ultimoEvento, sizeof(ultimoEvento),
+                "Accidente de %s. Safety Car en pista.", a->nombre);
         }
 
+        /* REBASES */
         for (int j = 0; j < cfg->numAutos; j++)
         {
             if (i == j)
@@ -619,13 +1308,20 @@ void actualizarPosiciones(Configuracion* cfg, int teclaArriba, int teclaAbajo)
             }
         }
     }
+
+    if (safetyCarTurnos > 0)
+    {
+        safetyCarTurnos--;
+    }
 }
 
+/* GANADOR */
 int determinarGanador(Configuracion* cfg)
 {
     for (int i = 0; i < cfg->numAutos; i++)
     {
-        if (cfg->autos[i].posicion >= cfg->longitudPista)
+        if (!cfg->autos[i].eliminado &&
+            cfg->autos[i].posicion >= cfg->longitudPista)
         {
             return i;
         }
@@ -645,6 +1341,7 @@ void liberarConfiguracion(Configuracion* cfg)
     cfg->numAutos = 0;
 }
 
+/* CONSOLA */
 void imprimirConsolaFinal(Configuracion* cfg, int ganadorIdx, int turno, float tiempoCarrera)
 {
     char tiempoTxt[32];
@@ -688,20 +1385,9 @@ void imprimirConsolaFinal(Configuracion* cfg, int ganadorIdx, int turno, float t
     printf(" PODIO\n");
     printf("--------------------------------------------------------------------------\n");
 
-    if (cnt >= 1)
-    {
-        printf(" 1. %s\n", orden[0].nombre);
-    }
-
-    if (cnt >= 2)
-    {
-        printf(" 2. %s\n", orden[1].nombre);
-    }
-
-    if (cnt >= 3)
-    {
-        printf(" 3. %s\n", orden[2].nombre);
-    }
+    if (cnt >= 1) printf(" 1. %s\n", orden[0].nombre);
+    if (cnt >= 2) printf(" 2. %s\n", orden[1].nombre);
+    if (cnt >= 3) printf(" 3. %s\n", orden[2].nombre);
 
     printf("\n CLASIFICACION FINAL\n");
     printf("--------------------------------------------------------------------------\n");
@@ -757,9 +1443,17 @@ void imprimirConsolaEstado(Configuracion* cfg, int turno, float tiempoCarrera)
     printf("==========================================================================\n");
     printf(" Turno: %-5d | Tiempo: %-10s | Clima: %-8s | Pista: %d unidades\n",
         turno, tiempoTxt, climaNombre(cfg->clima), cfg->longitudPista);
+
+    if (safetyCarTurnos > 0)
+    {
+        printf(" SAFETY CAR: %d turnos restantes\n", safetyCarTurnos);
+    }
+
+    printf(" Evento: %s\n", ultimoEvento);
+    printf(" Radio : %s\n", radioEquipo);
     printf("--------------------------------------------------------------------------\n");
-    printf(" %-3s | %-14s | %-13s | %-8s | %-10s | %-9s | %-8s\n",
-        "POS", "Piloto", "Distancia", "Vel.", "Gap", "Ritmo", "Estado");
+    printf(" %-3s | %-12s | %-11s | %-6s | %-7s | %-7s | %-7s | %-6s\n",
+        "POS", "Piloto", "Distancia", "Vel", "Gap", "Neum", "Fuel", "Estado");
     printf("--------------------------------------------------------------------------\n");
 
     for (int i = 0; i < cnt; i++)
@@ -774,33 +1468,26 @@ void imprimirConsolaEstado(Configuracion* cfg, int turno, float tiempoCarrera)
         }
         else
         {
-            snprintf(diferencia, sizeof(diferencia), "+%.1f", posicionLider - a->posicion);
+            snprintf(diferencia, sizeof(diferencia), "+%.0f", posicionLider - a->posicion);
         }
 
-        const char* ritmo;
+        const char* estado = "OK";
 
-        if (a->velocidadActual >= 140)
-        {
-            ritmo = "Rapido";
-        }
-        else if (a->velocidadActual >= 100)
-        {
-            ritmo = "Medio";
-        }
-        else
-        {
-            ritmo = "Lento";
-        }
+        if (a->eliminado) estado = "OUT";
+        else if (a->enPits) estado = "PITS";
+        else if (a->accidentado) estado = "CRASH";
+        else if (a->drsActivo) estado = "DRS";
 
-        printf(" %-3d | %-14s | %7.1f/%-5d | %7.1f | %-10s | %-9s | %-8s\n",
+        printf(" %-3d | %-12s | %6.0f/%-4d | %6.1f | %-7s | %5.1f%% | %5.1f%% | %-6s\n",
             i + 1,
             a->nombre,
             a->posicion,
             cfg->longitudPista,
             a->velocidadActual,
             diferencia,
-            ritmo,
-            a->accidentado ? "CRASH" : "OK");
+            a->neumaticos,
+            a->combustible,
+            estado);
     }
 
     printf("--------------------------------------------------------------------------\n");
@@ -813,38 +1500,25 @@ void imprimirConsolaEstado(Configuracion* cfg, int turno, float tiempoCarrera)
 
             float progreso = (j->posicion / cfg->longitudPista) * 100.0f;
 
-            if (progreso > 100.0f)
-            {
-                progreso = 100.0f;
-            }
+            if (progreso > 100.0f) progreso = 100.0f;
 
             int barrasProgreso = (int)(progreso / 5.0f);
             int barrasNitro = (j->nitro * 20) / NITRO_MAX;
 
-            if (barrasNitro > 20)
-            {
-                barrasNitro = 20;
-            }
+            if (barrasNitro > 20) barrasNitro = 20;
 
-            printf(" Tu auto: %s\n", j->nombre);
+            printf(" Tu auto: %s | IA: %s\n", j->nombre, personalidadNombre(j->personalidad));
 
             printf(" Progreso: [");
-
-            for (int b = 0; b < 20; b++)
-            {
-                printf(b < barrasProgreso ? "#" : "-");
-            }
-
+            for (int b = 0; b < 20; b++) printf(b < barrasProgreso ? "#" : "-");
             printf("] %.1f%%\n", progreso);
 
             printf(" Nitro:    [");
+            for (int b = 0; b < 20; b++) printf(b < barrasNitro ? "#" : "-");
+            printf("] %d/%d\n", j->nitro, NITRO_MAX);
 
-            for (int b = 0; b < 20; b++)
-            {
-                printf(b < barrasNitro ? "#" : "-");
-            }
-
-            printf("] %d restantes\n", j->nitro);
+            printf(" Neumaticos: %.1f%% | Combustible: %.1f%% | DRS: %s\n",
+                j->neumaticos, j->combustible, j->drsActivo ? "ACTIVO" : "NO");
 
             printf(" Estadisticas: Nitro usado: %d | Rebases: %d | Accidentes: %d | Vel. Max: %.1f\n",
                 j->nitroUsado,
@@ -857,12 +1531,13 @@ void imprimirConsolaEstado(Configuracion* cfg, int turno, float tiempoCarrera)
     }
 
     printf("==========================================================================\n");
-    printf(" Controles: Flecha arriba = NITRO | Flecha abajo = frenar | ESC = salir | Nitro se recarga\n");
+    printf(" Controles: Arriba=NITRO | Abajo=Frenar | P=Pit stop | ESC=Salir\n");
     printf("==========================================================================\n");
 
     fflush(stdout);
 }
 
+/* GRAFICOS */
 static void dibujarAuto(float cx, float cy, ALLEGRO_COLOR color,
     int esJugador, int accidentado,
     const char* inicial, ALLEGRO_FONT* fuente)
@@ -911,10 +1586,7 @@ void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno, float tie
         {
             camara = cfg->autos[j].posicion - 250.0f;
 
-            if (camara < 0)
-            {
-                camara = 0;
-            }
+            if (camara < 0) camara = 0;
 
             break;
         }
@@ -984,7 +1656,7 @@ void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno, float tie
 
     if (fuente)
     {
-        char buf[128];
+        char buf[160];
         char tiempoTxt[32];
 
         formatearTiempo(tiempoCarrera, tiempoTxt, sizeof(tiempoTxt));
@@ -992,16 +1664,21 @@ void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno, float tie
         snprintf(buf, sizeof(buf), "Turno: %d | Tiempo: %s", turno, tiempoTxt);
         al_draw_text(fuente, al_map_rgb(230, 230, 230), 10, 10, 0, buf);
 
-        snprintf(buf, sizeof(buf), "Clima: %s", climaNombre(cfg->clima));
+        snprintf(buf, sizeof(buf), "Clima: %s | Safety Car: %s",
+            climaNombre(cfg->clima), safetyCarTurnos > 0 ? "SI" : "NO");
         al_draw_text(fuente, al_map_rgb(255, 200, 0), 10, 28, 0, buf);
 
         for (int i = 0; i < cfg->numAutos; i++)
         {
             if (cfg->autos[i].esJugador)
             {
-                char nitroTxt[64];
-                snprintf(nitroTxt, sizeof(nitroTxt), "Nitro: %d", cfg->autos[i].nitro);
-                al_draw_text(fuente, al_map_rgb(0, 220, 255), 10, 64, 0, nitroTxt);
+                snprintf(buf, sizeof(buf), "Nitro: %d | Neum: %.0f%% | Fuel: %.0f%% | DRS: %s",
+                    cfg->autos[i].nitro,
+                    cfg->autos[i].neumaticos,
+                    cfg->autos[i].combustible,
+                    cfg->autos[i].drsActivo ? "ON" : "OFF");
+
+                al_draw_text(fuente, al_map_rgb(0, 220, 255), 10, 64, 0, buf);
                 break;
             }
         }
@@ -1015,23 +1692,20 @@ void dibujarPista(Configuracion* cfg, ALLEGRO_FONT* fuente, int turno, float tie
 
         al_draw_text(fuente, al_map_rgb(200, 200, 200),
             ANCHO_VENTANA - 10, 28, ALLEGRO_ALIGN_RIGHT,
-            "Arriba: NITRO  Abajo: frenar  ESC: salir");
+            "Arriba=NITRO  Abajo=Frenar  P=Pits  ESC=Salir");
     }
 }
 
 void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente)
 {
-    if (!fuente)
-    {
-        return;
-    }
+    if (!fuente) return;
 
     int n = cfg->numAutos;
     float ty = MARGEN_Y + n * ALTO_CARRIL + 30;
     float xs = MARGEN_X;
-    float cw[6] = { 30, 160, 120, 110, 100, 90 };
+    float cw[6] = { 30, 150, 120, 90, 90, 90 };
 
-    const char* hdr[] = { "#", "Piloto", "Posicion", "Vel.", "Rebases", "Estado" };
+    const char* hdr[] = { "#", "Piloto", "Posicion", "Vel.", "Neum.", "Estado" };
     float x = xs;
 
     for (int c = 0; c < 6; c++)
@@ -1041,16 +1715,13 @@ void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente)
     }
 
     ty += 18;
-    al_draw_line(xs, ty, xs + 650, ty, al_map_rgb(120, 120, 60), 1.0f);
+    al_draw_line(xs, ty, xs + 590, ty, al_map_rgb(120, 120, 60), 1.0f);
     ty += 4;
 
     Auto orden[MAX_AUTOS];
     int cnt = n < MAX_AUTOS ? n : MAX_AUTOS;
 
-    for (int i = 0; i < cnt; i++)
-    {
-        orden[i] = cfg->autos[i];
-    }
+    for (int i = 0; i < cnt; i++) orden[i] = cfg->autos[i];
 
     for (int i = 0; i < cnt - 1; i++)
     {
@@ -1075,6 +1746,13 @@ void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente)
             : a->accidentado ? al_map_rgb(255, 80, 80)
             : al_map_rgb(230, 230, 230);
 
+        const char* estado = "OK";
+
+        if (a->eliminado) estado = "OUT";
+        else if (a->enPits) estado = "PITS";
+        else if (a->accidentado) estado = "CRASH";
+        else if (a->drsActivo) estado = "DRS";
+
         snprintf(buf, sizeof(buf), "%d", i + 1);
         al_draw_text(fuente, rc, x + 4, ty, 0, buf);
         x += cw[0];
@@ -1090,47 +1768,13 @@ void dibujarTabla(Configuracion* cfg, ALLEGRO_FONT* fuente)
         al_draw_text(fuente, rc, x + 4, ty, 0, buf);
         x += cw[3];
 
-        snprintf(buf, sizeof(buf), "%d", a->adelantamientos);
+        snprintf(buf, sizeof(buf), "%.0f%%", a->neumaticos);
         al_draw_text(fuente, rc, x + 4, ty, 0, buf);
         x += cw[4];
 
-        al_draw_text(fuente, rc, x + 4, ty, 0, a->accidentado ? "CRASH" : "OK");
+        al_draw_text(fuente, rc, x + 4, ty, 0, estado);
 
         ty += 20;
-    }
-
-    for (int i = 0; i < n; i++)
-    {
-        if (!cfg->autos[i].esJugador)
-        {
-            continue;
-        }
-
-        Auto* jug = &cfg->autos[i];
-        ty += 8;
-
-        float prog = jug->posicion / (float)cfg->longitudPista;
-
-        if (prog > 1.0f)
-        {
-            prog = 1.0f;
-        }
-
-        float bw = 600;
-
-        al_draw_text(fuente, al_map_rgb(0, 220, 255), xs, ty, 0, "Tu progreso:");
-        ty += 16;
-
-        al_draw_filled_rectangle(xs, ty, xs + bw, ty + 12, al_map_rgb(40, 40, 60));
-        al_draw_filled_rectangle(xs, ty, xs + bw * prog, ty + 12, al_map_rgb(0, 220, 255));
-        al_draw_rectangle(xs, ty, xs + bw, ty + 12, al_map_rgb(120, 120, 120), 1.0f);
-
-        char pct[16];
-        snprintf(pct, sizeof(pct), "%.0f%%", prog * 100.0f);
-        al_draw_text(fuente, al_map_rgb(10, 10, 10),
-            xs + bw * prog / 2.0f, ty, ALLEGRO_ALIGN_CENTRE, pct);
-
-        break;
     }
 }
 
@@ -1158,39 +1802,40 @@ static void dibujarMenu(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracio
 
     char buf[160];
 
-    al_draw_filled_rounded_rectangle(330, 185, 1070, 265, 15, 15, al_map_rgb(18, 22, 45));
-    al_draw_rounded_rectangle(330, 185, 1070, 265, 15, 15, al_map_rgb(80, 180, 255), 2);
+    al_draw_filled_rounded_rectangle(280, 185, 1120, 265, 15, 15, al_map_rgb(18, 22, 45));
+    al_draw_rounded_rectangle(280, 185, 1120, 265, 15, 15, al_map_rgb(80, 180, 255), 2);
 
     snprintf(buf, sizeof(buf), "Pista: %d unidades", cfg->longitudPista);
-    al_draw_text(normal, al_map_rgb(230, 230, 230), 390, 205, 0, buf);
+    al_draw_text(normal, al_map_rgb(230, 230, 230), 330, 205, 0, buf);
 
     snprintf(buf, sizeof(buf), "Clima: %s", climaNombre(cfg->clima));
-    al_draw_text(normal, al_map_rgb(255, 200, 0), 650, 205, 0, buf);
+    al_draw_text(normal, al_map_rgb(255, 200, 0), 600, 205, 0, buf);
 
     snprintf(buf, sizeof(buf), "Autos registrados: %d", cfg->numAutos);
-    al_draw_text(normal, al_map_rgb(0, 220, 255), 870, 205, 0, buf);
+    al_draw_text(normal, al_map_rgb(0, 220, 255), 820, 205, 0, buf);
 
     al_draw_text(normal, al_map_rgb(180, 180, 180),
         ANCHO_VENTANA / 2, 238, ALLEGRO_ALIGN_CENTRE,
-        "El primer piloto registrado es el jugador");
+        "ENTER iniciar | M marcas | T temporada | H historico | ESC salir");
 
     al_draw_text(normal, al_map_rgb(255, 200, 0),
         ANCHO_VENTANA / 2, 300, ALLEGRO_ALIGN_CENTRE,
         "PILOTOS REGISTRADOS");
 
-    float x0 = 290;
+    float x0 = 250;
     float y0 = 335;
-    float ancho = 820;
+    float ancho = 900;
     float altoFila = 32;
 
     al_draw_filled_rectangle(x0, y0, x0 + ancho, y0 + altoFila, al_map_rgb(35, 40, 70));
 
     al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 20, y0 + 7, 0, "#");
     al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 70, y0 + 7, 0, "Piloto");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 270, y0 + 7, 0, "Vel.");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 390, y0 + 7, 0, "Destreza");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 550, y0 + 7, 0, "Tipo");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 670, y0 + 7, 0, "Extra");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 260, y0 + 7, 0, "Vel.");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 360, y0 + 7, 0, "Destreza");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 510, y0 + 7, 0, "Tipo");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 650, y0 + 7, 0, "IA");
+    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 790, y0 + 7, 0, "Extra");
 
     for (int i = 0; i < cfg->numAutos; i++)
     {
@@ -1205,30 +1850,32 @@ static void dibujarMenu(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracio
         snprintf(buf, sizeof(buf), "%d", i + 1);
         al_draw_text(normal, texto, x0 + 20, y + 7, 0, buf);
 
-        snprintf(buf, sizeof(buf), "%s%s", a->nombre, a->esJugador ? "  (TU)" : "");
+        snprintf(buf, sizeof(buf), "%s%s", a->nombre, a->esJugador ? " (TU)" : "");
         al_draw_text(normal, texto, x0 + 70, y + 7, 0, buf);
 
         snprintf(buf, sizeof(buf), "%.0f", a->velocidadBase);
-        al_draw_text(normal, texto, x0 + 270, y + 7, 0, buf);
+        al_draw_text(normal, texto, x0 + 260, y + 7, 0, buf);
 
         snprintf(buf, sizeof(buf), "%.0f", a->destreza);
-        al_draw_text(normal, texto, x0 + 390, y + 7, 0, buf);
+        al_draw_text(normal, texto, x0 + 360, y + 7, 0, buf);
 
-        al_draw_text(normal, texto, x0 + 550, y + 7, 0,
+        al_draw_text(normal, texto, x0 + 510, y + 7, 0,
             a->tipoVehiculo == TIPO_DEPORTIVO ? "Deportivo" : "Todoterreno");
+
+        al_draw_text(normal, texto, x0 + 650, y + 7, 0, personalidadNombre(a->personalidad));
 
         float extra = a->tipoVehiculo == TIPO_DEPORTIVO ?
             a->especificaciones.turbo : a->especificaciones.traccion;
 
         snprintf(buf, sizeof(buf), "%.0f", extra);
-        al_draw_text(normal, texto, x0 + 670, y + 7, 0, buf);
+        al_draw_text(normal, texto, x0 + 790, y + 7, 0, buf);
     }
 
-    float yControles = 690;
+    float yControles = 700;
 
-    al_draw_filled_rounded_rectangle(310, yControles, 1090, yControles + 105, 15, 15,
+    al_draw_filled_rounded_rectangle(250, yControles, 1150, yControles + 115, 15, 15,
         al_map_rgb(18, 22, 45));
-    al_draw_rounded_rectangle(310, yControles, 1090, yControles + 105, 15, 15,
+    al_draw_rounded_rectangle(250, yControles, 1150, yControles + 115, 15, 15,
         al_map_rgb(255, 200, 0), 2);
 
     al_draw_text(normal, al_map_rgb(255, 200, 0),
@@ -1237,11 +1884,11 @@ static void dibujarMenu(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal, Configuracio
 
     al_draw_text(normal, al_map_rgb(230, 230, 230),
         ANCHO_VENTANA / 2, yControles + 45, ALLEGRO_ALIGN_CENTRE,
-        "ENTER = iniciar carrera     M = mejores marcas     ESC = salir");
+        "Carrera: Flecha arriba = nitro | Flecha abajo = frenar | P = pit stop");
 
     al_draw_text(normal, al_map_rgb(0, 220, 255),
-        ANCHO_VENTANA / 2, yControles + 72, ALLEGRO_ALIGN_CENTRE,
-        "Durante la carrera: Flecha arriba = nitro     Flecha abajo = frenar     Nitro se recarga");
+        ANCHO_VENTANA / 2, yControles + 75, ALLEGRO_ALIGN_CENTRE,
+        "Extras: DRS automatico, safety car, clima dinamico, combustible y neumaticos");
 }
 
 static void dibujarFin(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal,
@@ -1249,45 +1896,30 @@ static void dibujarFin(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal,
 {
     al_clear_to_color(al_map_rgb(8, 10, 25));
 
-    for (int y = 0; y < ALTO_VENTANA; y++)
-    {
-        float t = (float)y / ALTO_VENTANA;
-        al_draw_line(0, y, ANCHO_VENTANA, y,
-            al_map_rgb((int)(8 + t * 18), (int)(10 + t * 12), (int)(25 + t * 35)), 1.0f);
-    }
-
-    al_draw_filled_rounded_rectangle(260, 40, 1140, 150, 20, 20, al_map_rgb(20, 25, 55));
-    al_draw_rounded_rectangle(260, 40, 1140, 150, 20, 20, al_map_rgb(255, 200, 0), 3);
-
-    al_draw_text(grande, al_map_rgb(255, 210, 40),
-        ANCHO_VENTANA / 2, 65, ALLEGRO_ALIGN_CENTRE,
-        "BANDERA A CUADROS");
-
     char buf[160];
     char tiempoTxt[32];
 
     formatearTiempo(tiempoCarrera, tiempoTxt, sizeof(tiempoTxt));
 
+    al_draw_text(grande, al_map_rgb(255, 210, 40),
+        ANCHO_VENTANA / 2, 70, ALLEGRO_ALIGN_CENTRE,
+        "BANDERA A CUADROS");
+
     if (ganadorIdx >= 0 && ganadorIdx < cfg->numAutos)
     {
-        Auto* g = &cfg->autos[ganadorIdx];
-
-        snprintf(buf, sizeof(buf), "Ganador: %s", g->nombre);
+        snprintf(buf, sizeof(buf), "Ganador: %s", cfg->autos[ganadorIdx].nombre);
         al_draw_text(grande, al_map_rgb(0, 220, 255),
-            ANCHO_VENTANA / 2, 170, ALLEGRO_ALIGN_CENTRE, buf);
+            ANCHO_VENTANA / 2, 150, ALLEGRO_ALIGN_CENTRE, buf);
 
         snprintf(buf, sizeof(buf), "%d turnos | Tiempo oficial: %s", turno, tiempoTxt);
         al_draw_text(normal, al_map_rgb(230, 230, 230),
-            ANCHO_VENTANA / 2, 225, ALLEGRO_ALIGN_CENTRE, buf);
+            ANCHO_VENTANA / 2, 210, ALLEGRO_ALIGN_CENTRE, buf);
     }
 
     Auto orden[MAX_AUTOS];
     int cnt = cfg->numAutos < MAX_AUTOS ? cfg->numAutos : MAX_AUTOS;
 
-    for (int i = 0; i < cnt; i++)
-    {
-        orden[i] = cfg->autos[i];
-    }
+    for (int i = 0; i < cnt; i++) orden[i] = cfg->autos[i];
 
     for (int i = 0; i < cnt - 1; i++)
     {
@@ -1303,87 +1935,36 @@ static void dibujarFin(ALLEGRO_FONT* grande, ALLEGRO_FONT* normal,
     }
 
     al_draw_text(normal, al_map_rgb(255, 200, 0),
-        ANCHO_VENTANA / 2, 280, ALLEGRO_ALIGN_CENTRE,
-        "PODIO");
+        ANCHO_VENTANA / 2, 270, ALLEGRO_ALIGN_CENTRE, "PODIO");
 
     if (cnt >= 1)
     {
-        al_draw_filled_rounded_rectangle(500, 340, 900, 400, 15, 15, al_map_rgb(35, 40, 70));
         snprintf(buf, sizeof(buf), "1. %s", orden[0].nombre);
-        al_draw_text(grande, al_map_rgb(255, 215, 0),
-            ANCHO_VENTANA / 2, 352, ALLEGRO_ALIGN_CENTRE, buf);
+        al_draw_text(grande, al_map_rgb(255, 215, 0), ANCHO_VENTANA / 2, 320, ALLEGRO_ALIGN_CENTRE, buf);
     }
 
     if (cnt >= 2)
     {
-        al_draw_filled_rounded_rectangle(290, 430, 650, 485, 15, 15, al_map_rgb(30, 35, 60));
         snprintf(buf, sizeof(buf), "2. %s", orden[1].nombre);
-        al_draw_text(normal, al_map_rgb(210, 210, 210),
-            470, 448, ALLEGRO_ALIGN_CENTRE, buf);
+        al_draw_text(normal, al_map_rgb(210, 210, 210), ANCHO_VENTANA / 2, 390, ALLEGRO_ALIGN_CENTRE, buf);
     }
 
     if (cnt >= 3)
     {
-        al_draw_filled_rounded_rectangle(750, 430, 1110, 485, 15, 15, al_map_rgb(30, 35, 60));
         snprintf(buf, sizeof(buf), "3. %s", orden[2].nombre);
-        al_draw_text(normal, al_map_rgb(205, 127, 50),
-            930, 448, ALLEGRO_ALIGN_CENTRE, buf);
-    }
-
-    float x0 = 260;
-    float y0 = 535;
-    float ancho = 880;
-    float altoFila = 30;
-
-    al_draw_text(normal, al_map_rgb(255, 200, 0),
-        ANCHO_VENTANA / 2, 500, ALLEGRO_ALIGN_CENTRE,
-        "CLASIFICACION FINAL");
-
-    al_draw_filled_rectangle(x0, y0, x0 + ancho, y0 + altoFila, al_map_rgb(35, 40, 70));
-
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 20, y0 + 7, 0, "POS");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 90, y0 + 7, 0, "Piloto");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 320, y0 + 7, 0, "Distancia");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 500, y0 + 7, 0, "Vel. Max");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 650, y0 + 7, 0, "Rebases");
-    al_draw_text(normal, al_map_rgb(255, 200, 0), x0 + 760, y0 + 7, 0, "Choques");
-
-    for (int i = 0; i < cnt; i++)
-    {
-        float y = y0 + altoFila * (i + 1);
-
-        ALLEGRO_COLOR fondo = (i % 2 == 0) ? al_map_rgb(22, 26, 50) : al_map_rgb(28, 32, 58);
-        ALLEGRO_COLOR texto = orden[i].esJugador ? al_map_rgb(0, 220, 255) : al_map_rgb(230, 230, 230);
-
-        al_draw_filled_rectangle(x0, y, x0 + ancho, y + altoFila, fondo);
-
-        snprintf(buf, sizeof(buf), "%d", i + 1);
-        al_draw_text(normal, texto, x0 + 20, y + 7, 0, buf);
-
-        al_draw_text(normal, texto, x0 + 90, y + 7, 0, orden[i].nombre);
-
-        snprintf(buf, sizeof(buf), "%.1f", orden[i].posicion);
-        al_draw_text(normal, texto, x0 + 320, y + 7, 0, buf);
-
-        snprintf(buf, sizeof(buf), "%.1f", orden[i].velocidadMaxima);
-        al_draw_text(normal, texto, x0 + 500, y + 7, 0, buf);
-
-        snprintf(buf, sizeof(buf), "%d", orden[i].adelantamientos);
-        al_draw_text(normal, texto, x0 + 650, y + 7, 0, buf);
-
-        snprintf(buf, sizeof(buf), "%d", orden[i].accidentesTotales);
-        al_draw_text(normal, texto, x0 + 760, y + 7, 0, buf);
+        al_draw_text(normal, al_map_rgb(205, 127, 50), ANCHO_VENTANA / 2, 430, ALLEGRO_ALIGN_CENTRE, buf);
     }
 
     al_draw_text(normal, al_map_rgb(180, 180, 180),
-        ANCHO_VENTANA / 2, ALTO_VENTANA - 50, ALLEGRO_ALIGN_CENTRE,
+        ANCHO_VENTANA / 2, ALTO_VENTANA - 60, ALLEGRO_ALIGN_CENTRE,
         "ENTER = volver al menu | ESC = salir");
 
     al_draw_text(normal, al_map_rgb(150, 220, 150),
-        ANCHO_VENTANA / 2, ALTO_VENTANA - 25, ALLEGRO_ALIGN_CENTRE,
-        "Se genero automaticamente el archivo reporte.txt");
+        ANCHO_VENTANA / 2, ALTO_VENTANA - 35, ALLEGRO_ALIGN_CENTRE,
+        "Se guardaron reporte, mejores marcas, temporada y estadisticas");
 }
 
+/* REPORTE */
 void generarReporteFinal(Configuracion* cfg, int ganadorIdx, int turno, float tiempoCarrera)
 {
     FILE* f = fopen("reporte.txt", "w");
@@ -1401,7 +1982,7 @@ void generarReporteFinal(Configuracion* cfg, int ganadorIdx, int turno, float ti
     fprintf(f, "          REPORTE FINAL DE CARRERA F1\n");
     fprintf(f, "=============================================\n\n");
 
-    fprintf(f, "Clima: %s\n", climaNombre(cfg->clima));
+    fprintf(f, "Clima final: %s\n", climaNombre(cfg->clima));
     fprintf(f, "Longitud de pista: %d unidades\n", cfg->longitudPista);
     fprintf(f, "Turnos totales: %d\n", turno);
     fprintf(f, "Tiempo oficial: %s\n\n", tiempoTxt);
@@ -1414,10 +1995,7 @@ void generarReporteFinal(Configuracion* cfg, int ganadorIdx, int turno, float ti
     Auto orden[MAX_AUTOS];
     int cnt = cfg->numAutos < MAX_AUTOS ? cfg->numAutos : MAX_AUTOS;
 
-    for (int i = 0; i < cnt; i++)
-    {
-        orden[i] = cfg->autos[i];
-    }
+    for (int i = 0; i < cnt; i++) orden[i] = cfg->autos[i];
 
     for (int i = 0; i < cnt - 1; i++)
     {
@@ -1437,13 +2015,15 @@ void generarReporteFinal(Configuracion* cfg, int ganadorIdx, int turno, float ti
 
     for (int i = 0; i < cnt; i++)
     {
-        fprintf(f, "%d. %s | %.1f unidades | Vel. Max: %.1f | Rebases: %d | Accidentes: %d\n",
+        fprintf(f, "%d. %s | %.1f unidades | VelMax: %.1f | Rebases: %d | Accidentes: %d | Neum: %.1f | Fuel: %.1f\n",
             i + 1,
             orden[i].nombre,
             orden[i].posicion,
             orden[i].velocidadMaxima,
             orden[i].adelantamientos,
-            orden[i].accidentesTotales);
+            orden[i].accidentesTotales,
+            orden[i].neumaticos,
+            orden[i].combustible);
     }
 
     fprintf(f, "\n=============================================\n");
@@ -1453,6 +2033,7 @@ void generarReporteFinal(Configuracion* cfg, int ganadorIdx, int turno, float ti
     fclose(f);
 }
 
+/* MAIN */
 int main(void)
 {
     srand((unsigned int)time(NULL));
@@ -1490,15 +2071,8 @@ int main(void)
     ALLEGRO_FONT* fNormal = al_load_ttf_font("DejaVuSans.ttf", 16, 0);
     ALLEGRO_FONT* fGrande = al_load_ttf_font("DejaVuSans-Bold.ttf", 32, 0);
 
-    if (!fNormal)
-    {
-        fNormal = al_create_builtin_font();
-    }
-
-    if (!fGrande)
-    {
-        fGrande = al_create_builtin_font();
-    }
+    if (!fNormal) fNormal = al_create_builtin_font();
+    if (!fGrande) fGrande = al_create_builtin_font();
 
     Configuracion cfg;
 
@@ -1508,9 +2082,6 @@ int main(void)
         return 1;
     }
 
-    printf("Cargado: %d autos, pista=%d, clima=%s\n",
-        cfg.numAutos, cfg.longitudPista, climaNombre(cfg.clima));
-
     EstadoJuego estado = ESTADO_MENU;
     int turno = 0;
     int ganadorIdx = -1;
@@ -1518,6 +2089,7 @@ int main(void)
     int redibujar = 0;
     int teclaArriba = 0;
     int teclaAbajo = 0;
+    int teclaPit = 0;
     int framesPorTurno = 8;
     int frameContador = 0;
     float tiempoCarrera = 0.0f;
@@ -1554,14 +2126,26 @@ int main(void)
                         cfg.autos[i].adelantamientos = 0;
                         cfg.autos[i].accidentesTotales = 0;
                         cfg.autos[i].velocidadMaxima = 0;
+                        cfg.autos[i].neumaticos = NEUMATICOS_MAX;
+                        cfg.autos[i].enPits = 0;
+                        cfg.autos[i].turnosPit = 0;
+                        cfg.autos[i].combustible = FUEL_MAX;
+                        cfg.autos[i].eliminado = 0;
+                        cfg.autos[i].drsActivo = 0;
                     }
 
                     turno = 0;
                     ganadorIdx = -1;
                     tiempoCarrera = 0.0f;
+                    safetyCarTurnos = 0;
+                    strcpy(ultimoEvento, "Carrera iniciada.");
+                    strcpy(radioEquipo, "Ingeniero: Buena salida, administra el ritmo.");
                     estado = ESTADO_CORRIENDO;
                 }
-                else if (estado == ESTADO_FIN || estado == ESTADO_MARCAS)
+                else if (estado == ESTADO_FIN ||
+                    estado == ESTADO_MARCAS ||
+                    estado == ESTADO_TEMPORADA ||
+                    estado == ESTADO_ESTADISTICAS)
                 {
                     estado = ESTADO_MENU;
                 }
@@ -1575,26 +2159,29 @@ int main(void)
                 teclaAbajo = 1;
                 break;
 
+            case ALLEGRO_KEY_P:
+                teclaPit = 1;
+                break;
+
             case ALLEGRO_KEY_M:
-                if (estado == ESTADO_MENU)
-                {
-                    estado = ESTADO_MARCAS;
-                }
+                if (estado == ESTADO_MENU) estado = ESTADO_MARCAS;
+                break;
+
+            case ALLEGRO_KEY_T:
+                if (estado == ESTADO_MENU) estado = ESTADO_TEMPORADA;
+                break;
+
+            case ALLEGRO_KEY_H:
+                if (estado == ESTADO_MENU) estado = ESTADO_ESTADISTICAS;
                 break;
             }
         }
 
         if (ev.type == ALLEGRO_EVENT_KEY_UP)
         {
-            if (ev.keyboard.keycode == ALLEGRO_KEY_UP)
-            {
-                teclaArriba = 0;
-            }
-
-            if (ev.keyboard.keycode == ALLEGRO_KEY_DOWN)
-            {
-                teclaAbajo = 0;
-            }
+            if (ev.keyboard.keycode == ALLEGRO_KEY_UP) teclaArriba = 0;
+            if (ev.keyboard.keycode == ALLEGRO_KEY_DOWN) teclaAbajo = 0;
+            if (ev.keyboard.keycode == ALLEGRO_KEY_P) teclaPit = 0;
         }
 
         if (ev.type == ALLEGRO_EVENT_TIMER)
@@ -1610,7 +2197,10 @@ int main(void)
                     tiempoCarrera += framesPorTurno / (float)FPS;
 
                     recargarNitroJugador(&cfg, turno);
-                    actualizarPosiciones(&cfg, teclaArriba, teclaAbajo);
+                    actualizarClimaDinamico(&cfg, turno);
+                    actualizarRadio(&cfg, turno);
+                    actualizarPosiciones(&cfg, teclaArriba, teclaAbajo, teclaPit);
+
                     imprimirConsolaEstado(&cfg, turno, tiempoCarrera);
 
                     ganadorIdx = determinarGanador(&cfg);
@@ -1619,6 +2209,8 @@ int main(void)
                     {
                         imprimirConsolaFinal(&cfg, ganadorIdx, turno, tiempoCarrera);
                         guardarMarca(cfg.autos[ganadorIdx], turno, tiempoCarrera);
+                        guardarPuntosTemporada(&cfg);
+                        guardarEstadisticasHistoricas(&cfg, ganadorIdx, tiempoCarrera);
                         generarReporteFinal(&cfg, ganadorIdx, turno, tiempoCarrera);
 
                         estado = ESTADO_FIN;
@@ -1649,6 +2241,14 @@ int main(void)
 
             case ESTADO_MARCAS:
                 mostrarMejoresMarcas(fGrande, fNormal);
+                break;
+
+            case ESTADO_TEMPORADA:
+                mostrarTemporada(fGrande, fNormal);
+                break;
+
+            case ESTADO_ESTADISTICAS:
+                mostrarEstadisticas(fGrande, fNormal);
                 break;
             }
 
